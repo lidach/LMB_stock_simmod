@@ -29,9 +29,8 @@
 #' @param Vcat_low minimum size for vulnerability to capture
 #' @param Vcat_high maximum size for vulnerability to capture
 #' @param Vcat_sd standard deviation of capture vulnerability
-#' @param Vrec_low bottom end of slot (retention)
-#' @param Vrec_high upper end of slot (retention)
-#' @param Vrec_sd standard deviation of retention curve
+#' @param Vret_low minimum size for retention (retention)
+#' @param Vret_sd standard deviation of retention curve
 #' @param So.92 back-scaled survival of fish size
 #' first parm is the max pwu, second determines steepness (larger numbers = steeper), third is inflection point
 #' @param var.cpue utility parameters for CPUE
@@ -47,7 +46,7 @@
 #' @param L0 length at beginning of DD process, assumed to be settlement, from Stunz et al. 2002
 #' @param M1 natural mortality/year of 10 mm fish, roughly 15
 #' @param ts time to grow from L0 to Lr
-#' @param Lr Length at recruitment, ballpark gueess
+#' @param Lr Length at recruitment, ballpark guess
 #'
 
 ## Largemouth bass life history parameter
@@ -60,28 +59,23 @@ input_list <- list(
   Linf_mu = 643,
   vbk = 0.26,
   t0 = -0.024,
-  M = 0.1,
   lorenzc = 1,
-  recK = 15,
   TLr = 450,
   alfa = 0.00000339,
   bet = 3.24,
-  R0_sing = 1e6,
+  R0_sing = 4e4,
   city_pen = c(0.5, 0.6, 0.7, 0.8, 0.9),
   dist = c(10, 20, 30, 40, 50),
-  qt = 0.000027,
-  reg_eff = 26869,
+  tot_eff = 10255 * (1 + (1 - 0.27)), # 10255 hours accounted for 27% of total effort (FWC 2021 report)
   cost_type = "null",
   cstar = 1,
   persis = 0.5,
   kill = 0.37,
-  discard = 0.1,
   Vcat_low = 250,
   Vcat_high = 850,
   Vcat_sd = 0.1,
-  Vrec_low = 350,
-  Vrec_high = 500,
-  Vrec_sd = 0.1,
+  Vret_low = 350,
+  Vret_sd = 0.1,
   So.92 = 0.89,
   var.cpue = c(1.5, 0.15, 37.08965),
   var.harv = c(1.5, 0.3, 35.12768),
@@ -112,6 +106,11 @@ input_list <- list(
 #' @param stock stocking scenario
 #' @param isopleth_plots if TRUE, export results for isopleths (WSB, total utility, CTB, and effort summed across sites)
 #' @param DD_flag density dependence flag; TRUE is on, FALSE is off
+#' @param M natural mortality
+#' @param discard discard mortality rate
+#' @param recK compensation ratio
+#' @param qt catchability
+#' @param DD_sd standard deviation for Linf at various lakes (assuming normal distribution, mean = Linf mean)
 
 stocking_mod <- function(input_list,
                          sig1e,
@@ -119,7 +118,12 @@ stocking_mod <- function(input_list,
                          H,
                          stock,
                          isopleth_plots = FALSE,
-                         DD_flag = TRUE) {
+                         DD_flag = TRUE,
+                         M = 0.1,
+                         discard = 0.1,
+                         recK = 15,
+                         qt = 0.00093,
+                         DD_sd = 0.01) {
   with(input_list, {
     ################
     ## Settings ####
@@ -128,7 +132,7 @@ stocking_mod <- function(input_list,
     ## Life history
     Age <- 1:Amax
     Linf_mat <- matrix(NA, nrow = years, ncol = nsites) # matrix of asymptotic lengths (different across lakes and years)
-    if (DD_flag) Linf_mat[1, ] <- rnorm(nsites, Linf_mu, Linf_mu * 0.01) # if DD_flag == FALSE, this should be NAs
+    if (DD_flag) Linf_mat[1, ] <- rnorm(nsites, Linf_mu, Linf_mu * DD_sd) # if DD_flag == FALSE, this should be NAs
     TL_global <- Linf_mu * (1 - exp(-vbk * Age - t0)) # global length at age
     TL_bar <- array(NA, c(years, Amax, nsites)) # length at age for each lake and year (modeling density dependent growth)
     for (a in 1:Amax) TL_bar[1, a, ] <- Linf_mat[1, ] * (1 - exp(-vbk * Age[a])) # for just first year (estimated in time dynamics loop)
@@ -136,7 +140,7 @@ stocking_mod <- function(input_list,
     wmat <- alfa * TLr^bet # refers to maturity (used to calculate fecundity)
     Fec <- ifelse(Wt < wmat, 0, Wt - wmat)
     Mat <- Fec / max(Fec) # maturity at age (logistic function)
-    R0_site <- rep(R0_sing, nsites) # R0 (unfished recruitment) across lakes
+    R0_site <- rep(R0_sing / nsites, nsites) # R0 (unfished recruitment) across lakes
     So <- exp(-(M * TLr / TL_global))^lorenzc # survival
     So_st <- So
     So_hat <- So
@@ -150,53 +154,54 @@ stocking_mod <- function(input_list,
     Vulcat <- Vulcat_low - Vulcat_high
     Vulcat <- Vulcat / max(Vulcat)
     Vulcat_mat <- matrix(rep(Vulcat, each = nsites), nrow = Amax, ncol = nsites, byrow = TRUE)
-    # retention (vulnerability to discard/release)
-    Vulrec_low <- 1 / (1 + exp(-(TL_global - Vcat_low) / (Vcat_sd * Vcat_low)))
-    Vulrec_high <- 1 / (1 + exp(-(TL_global - Vcat_high) / (Vcat_sd * Vcat_high)))
-    Vulrec <- Vulrec_low - Vulrec_high
-    Vulrec <- Vulrec / max(Vulrec)
-    Vulrec_mat <- matrix(rep(Vulrec, each = nsites), nrow = Amax, ncol = nsites, byrow = TRUE)
+    # retention
+    ret_sigma <- 0.1 * Vcat_low # sd from CV
+    Vulret <- pnorm((TL_global - Vcat_low) / ret_sigma)
+    Vulret <- Vulret / max(Vulret)
+    # vulnerability to discard/release
+    Vuldis <- Vulcat * (1 - Vulret)
+    Vuldis <- Vuldis / max(Vuldis)
+    Vuldis_mat <- matrix(rep(Vuldis, each = nsites), nrow = Amax, ncol = nsites, byrow = TRUE)
 
     ## Socioeconomic and fishery parameters
-    # max effort
-    max_eff <- reg_eff * 2 / nsites # ballpark guess that max effort is double what current effort is
-    tot_eff <- sum(rep(max_eff, nsites))
     # costs
     cost <- switch(cost_type,
       null = 50 + dist * 0, # low differences in costs between sites, so high movement of anglers
       mult = 50 + dist * 3,
-      exp = 5 + dist^1.5
-    ) # great differences in costs between sites, so low movement of anglers
+      exp = 5 + dist^1.5 # great differences in costs between sites, so low movement of anglers
+    )
 
 
 
     ###################
     ## Recruitment ####
     ###################
-    EPRo <- sum(Fec * S) # eggs per recruit unfished
-    Eo <- R0_sing * EPRo # total eggs unfished
-    a <- recK / EPRo # Beverton-Holt a parameter
-    b <- (recK - 1) / (R0_site * EPRo) # Beverton-Holt b parameter
+    EPR0 <- sum(Fec * S) # eggs per recruit unfished
+    E0 <- (R0_sing / nsites) * EPR0 # total eggs unfished
+    # h = CR/(CR+4), CR = 4h/(1-h)
+    h <- recK / (recK + 4) # steepness conversion
+    a <- (4 * h) / (EPR0 * (1 - h)) # Beverton-Holt a parameter
+    b <- (5 * h - 1) / ((1 - h) * R0_site * EPR0) # Beverton-Holt b parameter
 
     ## habitat specific parameters
     ahab <- a * H^cstar
     bhab <- t(t(H^cstar) * b) / H
-    R0_mat <- (ahab * EPRo - 1) / t(t(bhab) * EPRo)
+    R0_mat <- (ahab * EPR0 - 1) / t(t(bhab) * EPR0)
 
     ## unpacking
-    log_aa <- log(ahab) # local Beverton-Holt parameters for unpacking
-    log_bb <- log(ahab / bhab) # local Beverton-Holt parameters for unpacking
+    aa <- ahab # local Beverton-Holt parameters for unpacking
+    bb <- ahab / bhab # local Beverton-Holt parameters for unpacking
     Ls1 <- rep(Ls, nsites) # length at stocking across lakes
     DD <- (Ls1 - L0) / (Lr - L0) #
     v <- (Lr - L0) / ts # linear growth rate through recruitment period
     S1 <- (L0 / Ls1)^(M1 / v) # base survival for phase 1 if stage 2
     S2 <- (Ls1 / Lr)^(M1 / v) # base survival for phase 2 of stage 2
     S1S2 <- S1 * S2 # cumulative base survival for recruitment period
-    SR <- t(t(exp(log_aa)) / S1S2) # survival rate of larvae
+    SR <- t(t(aa) / S1S2) # survival rate of larvae
     a1 <- S1 # survival for phase 1 of stage 2
-    b1 <- t(t(exp(log_aa)) * DD) / exp(log_bb) # DD component of survival for phase 1 of stage 2
+    b1 <- t(t(aa) * DD) / bb # DD component of survival for phase 1 of stage 2
     a2 <- S2 # survival for phase 2 of stage 2
-    b2 <- (exp(log_aa) / exp(log_bb) - b1) / (t(t(SR) * a1)) ## DD component of survival for phase 2 of stage 2
+    b2 <- (aa / bb - b1) / (t(t(SR) * a1)) ## DD component of survival for phase 2 of stage 2
 
     ## hatchery and stocking parameters
     a1_hat <- a1 * fit_hat
@@ -210,7 +215,6 @@ stocking_mod <- function(input_list,
     ######################
     et <- matrix(0, nrow = years, ncol = nsites) # effort
     hr <- matrix(0, nrow = years, ncol = nsites) # harvest rate
-    FM <- array(0, c(years, Amax, nsites)) # initial fishing mortality
     FM_tot <- array(0, c(years, Amax, nsites)) # total fishing mortality (direct+discard)
     FM_direct <- array(0, c(years, Amax, nsites)) # direct fishing mortality (from fishery)
     FM_discard <- array(0, c(years, Amax, nsites)) # discard (regulatory and release) fishing mortality
@@ -261,9 +265,8 @@ stocking_mod <- function(input_list,
     persis_pmax_eff[1] <- pmax_eff[1] # no stickyness first year
 
     # fishing mortality
-    FM[1, , ] <- t(t(Vulcat_mat) * et[1, ]) * qt
-    FM_direct[1, , ] <- FM[1, , ] * Vulcat_mat * Vulrec_mat
-    FM_discard[1, , ] <- FM[1, , ] * (1 - Vulrec_mat) * discard
+    FM_direct[1, , ] <- t(t(Vulcat_mat * Vuldis) * et[1, ]) * qt
+    FM_discard[1, , ] <- Vuldis_mat * discard
     FM_tot[1, , ] <- FM_direct[1, , ] + FM_discard[1, , ]
 
     # numbers at age, eggs, recruitment
@@ -283,7 +286,7 @@ stocking_mod <- function(input_list,
 
     # utility
     cpue[1, ] <- colSums(nage[1, , ] * Vulcat)
-    hpue[1, ] <- colSums(nage[1, , ] * Vulcat * Vulrec)
+    hpue[1, ] <- colSums(nage[1, , ] * Vulcat * Vulret)
     ## avg_size - DD_flag
     avg_size[1, ] <- colSums(nage[1, , ] * Vulcat * TL_global) / colSums(nage[1, , ] * Vulcat)
     if (DD_flag) avg_size[1, ] <- colSums(nage[1, , ] * Vulcat * TL_bar[1, , ]) / colSums(nage[1, , ] * Vulcat)
@@ -329,9 +332,8 @@ stocking_mod <- function(input_list,
       }
 
       ## fishing mortalities (direct, discard, and total)
-      FM[y, , ] <- qt * t(t(Vulcat_mat) * et[y, ])
-      FM_direct[y, , ] <- FM[y, , ] * Vulcat_mat * Vulrec_mat
-      FM_discard[y, , ] <- FM[y, , ] * (1 - Vulrec_mat) * discard
+      FM_direct[y, , ] <- qt * t(t(Vulcat_mat * Vuldis) * et[y, ])
+      FM_discard[y, , ] <- Vuldis_mat * discard
       FM_tot[y, , ] <- FM_direct[y, , ] + FM_discard[y, , ]
 
       ## DD growth
@@ -376,7 +378,7 @@ stocking_mod <- function(input_list,
       catch_numage_hat[y, , ] <- (FM_tot[y, , ] / (FM_tot[y, , ] + M)) * nage_hat[y, , ] * (1 - exp(-(M + FM_tot[y, , ])))
       catch_numage_st[y, , ] <- (FM_tot[y, , ] / (FM_tot[y, , ] + M)) * nage_st[y, , ] * (1 - exp(-(M + FM_tot[y, , ])))
       catch_num[y, ] <- colSums(catch_numage[y, , ] + catch_numage_hat[y, , ] + catch_numage_st[y, , ])
-      harvest_num[y, ] <- colSums(catch_numage[y, , ] * Vulrec) + colSums(catch_numage_hat[y, , ] * Vulrec) + colSums(catch_numage_st[y, , ] * Vulrec)
+      harvest_num[y, ] <- colSums(catch_numage[y, , ] * Vulret) + colSums(catch_numage_hat[y, , ] * Vulret) + colSums(catch_numage_st[y, , ] * Vulret)
       cpue[y, ] <- catch_num[y, ] / et[y, ]
       cpue[is.na(cpue)] <- 0
       hpue[y, ] <- harvest_num[y, ] / et[y, ]
@@ -408,19 +410,21 @@ stocking_mod <- function(input_list,
     ## Out of loop calculations ####
     ################################
     val <- U.tot * et
-    # caught trophy biomass
+    # caught trophy numbers
     CTB <- sapply(1:nsites, function(x) rowSums(catch_numage[, trophy_age:Amax, x]))
+    # caught trophy numbers (alive)
+    CTB_alive <- sapply(1:nsites, function(x) rowSums(nage[, trophy_age:Amax, x]))
     # trophy biomass from population
     # CTB <- sapply(1:nsites, function(x) rowSums(nage[,trophy_age:Amax,x]*Wt))
-    WSB <- t(t(eggs) / Eo)
+    WSB <- t(t(eggs) / E0)
 
     export_years <- (years_init + 1):years
     res <- list(
-      et = et, hr = hr, WSB = WSB, st = st, R = R,
+      et = et, hr = hr, WSB = WSB, st = st, R = R, R_hat = R_hat, R_st = R_st,
       eggs = eggs, catch = catch_num, cpue = cpue,
       harvest = harvest_num, hpue = hpue, avg_size = avg_size,
       U.tot = U.tot, U.dist = U.dist, U.crd = U.crd, U.cpue = U.cpue, U.hpue = U.hpue, U.size = U.size, U.st = U.st,
-      val = val, Linf_mat = Linf_mat, CTB = CTB
+      val = val, Linf_mat = Linf_mat, CTB = CTB, CTB_alive = CTB_alive
     )
     for (i in 1:length(res)) res[[i]] <- t(sapply(export_years, function(x) res[[i]][x, ]))
     res$TL_bar <- TL_bar[export_years, , ]
