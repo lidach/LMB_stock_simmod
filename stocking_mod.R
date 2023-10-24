@@ -77,11 +77,11 @@ input_list <- list(
   Vret_low = 350,
   Vret_sd = 0.1,
   So.92 = 0.89,
-  var.cpue = c(1.5, 4, 1.979228),
-  var.harv = c(1.5, 10, 1.025765),
-  var.size = c(1.5, 0.002, 509.4874),
+  var.cpue = c(1.5, 4, 2.373142),
+  var.harv = c(1.5, 10, 1.2314),
+  var.size = c(1.5, 0.002, 499.1246),
   var.dist = c(1.5, -0.03, 25),
-  var.crowd = c(1.5, -0.0008, 1475.775),
+  var.crowd = c(1.5, -0.0008, 1505.835),
   grav_pow = 1,
   fit_hat = 1,
   fit_st = 0.85,
@@ -122,7 +122,7 @@ stocking_mod <- function(input_list,
                          M = 0.1,
                          discard = 0.1,
                          recK = 15,
-                         qt = 0.000823,
+                         qt = 0.00115,
                          DD_sd = 0.01) {
   with(input_list, {
     ################
@@ -144,7 +144,7 @@ stocking_mod <- function(input_list,
     So <- exp(-(M * TLr / TL_global))^lorenzc # survival
     So_st <- So
     So_hat <- So
-    S <- c(1, cumprod(So[2:Amax])) # survivorship (used for recruitment calculations)
+    S <- c(1, cumprod(So[1:(Amax - 1)])) # survivorship (used for recruitment calculations)
     S_mat <- matrix(rep(S, each = nsites), nrow = Amax, ncol = nsites, byrow = TRUE)
 
     ## Selectivities

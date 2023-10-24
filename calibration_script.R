@@ -19,11 +19,11 @@ source("stocking_mod.R")
 
 ## values for PWU curve
 Ut_list <- list()
-Ut_list[[1]] <- input_list$var.cpue <- c(1.5, 4, 1.979228)
-Ut_list[[2]] <- input_list$var.harv <- c(1.5, 10, 1.025765)
-Ut_list[[3]] <- input_list$var.size <- c(1.5, 0.002, 509.4874)
+Ut_list[[1]] <- input_list$var.cpue <- c(1.5, 4, 2.373142)
+Ut_list[[2]] <- input_list$var.harv <- c(1.5, 10, 1.2314)
+Ut_list[[3]] <- input_list$var.size <- c(1.5, 0.002, 499.1246)
 Ut_list[[4]] <- input_list$var.dist <- c(1.5, -0.03, 25)
-Ut_list[[5]] <- input_list$var.crowd <- c(1.5, -0.0008, 1475.775)
+Ut_list[[5]] <- input_list$var.crowd <- c(1.5, -0.0008, 1505.835)
 
 
 #################
@@ -43,7 +43,7 @@ test <- stocking_mod(input_list,
   M = 0.1,
   discard = 0.1,
   recK = 15,
-  qt = 0.000823,
+  qt = 0.00115,
   DD_sd = 0.01
 )
 mean(test$WSB[input_list$years - input_list$years_init, ])
